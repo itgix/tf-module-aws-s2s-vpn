@@ -9,9 +9,8 @@ Part of the [ITGix AWS Landing Zone](https://itgix.com/itgix-landing-zone/).
 ## Resources Created
 
 - VPN connection (with optional static routes)
-- VPN Gateway attachment
-- Route propagation to VPC route tables
-- *(Optional)* Transit Gateway VPN attachment
+- *(VGW mode)* VPN Gateway attachment and route propagation to VPC route tables
+- *(TGW mode)* Transit Gateway VPN attachment
 
 ## Requirements
 
@@ -72,25 +71,191 @@ Part of the [ITGix AWS Landing Zone](https://itgix.com/itgix-landing-zone/).
 | `vpn_connection_tunnel2_cgw_inside_address` | CGW inside address of tunnel 2 |
 | `vpn_connection_tunnel2_vgw_inside_address` | VGW inside address of tunnel 2 |
 
-## Usage Example
+## Attachment Modes
+
+This module supports two mutually exclusive approaches for attaching the VPN connection:
+
+### Approach 1 — Transit Gateway (TGW) Mode
+
+Centralized routing — VPN traffic flows through a Transit Gateway hub to reach multiple VPCs and accounts.
+
+```
+External Network → Customer Gateway → VPN → Transit Gateway → Application VPCs (and vice-versa)
+```
+
+Set:
+```hcl
+connect_to_transit_gateway    = true
+create_vpn_gateway_attachment = false
+transit_gateway_id            = "<tgw-id>"
+```
+
+### Approach 2 — Virtual Private Gateway (VGW) Mode
+
+Direct attachment — VPN connects to a single VPC via a Virtual Private Gateway.
+
+```
+External Network → Customer Gateway → VPN → VGW → Single VPC (and vice-versa)
+```
+
+Set:
+```hcl
+connect_to_transit_gateway    = false   # default
+create_vpn_gateway_attachment = true    # default
+vpn_gateway_id                = "<vgw-id>"
+vpc_subnet_route_table_ids    = ["rtb-xxx", ...]
+vpc_subnet_route_table_count  = <number>
+```
+
+## Usage Examples
+
+### TGW Mode
 
 ```hcl
+# Customer Gateway — represents the remote (on-prem) VPN device
+resource "aws_customer_gateway" "main" {
+  bgp_asn    = 65000
+  ip_address = "203.0.113.1" # Public IP of the on-prem VPN device
+  type       = "ipsec.1"
+
+  tags = {
+    Name = "customer-gateway"
+  }
+}
+
+# S2S VPN module — attached to Transit Gateway
 module "s2s_vpn" {
   source = "path/to/tf-module-aws-s2s-vpn"
 
-  customer_gateway_id = "cgw-0abc1234def567890"
-  vpn_gateway_id      = "vgw-0abc1234def567890"
-  vpc_id              = "vpc-0abc1234def567890"
+  customer_gateway_id = aws_customer_gateway.main.id
+  transit_gateway_id  = module.transit_gateway.ec2_transit_gateway_id
+  vpc_id              = module.egress_vpc.vpc_id
+
+  connect_to_transit_gateway    = true
+  create_vpn_gateway_attachment = false
+
+  vpn_connection_static_routes_only         = true
+  vpn_connection_static_routes_destinations = ["10.100.0.0/24"]
+  local_ipv4_network_cidr                   = "10.100.0.0/24"
+  remote_ipv4_network_cidr                  = "10.0.0.0/11"
+
+  tunnel_inside_ip_version = "ipv4"
+
+  # Tunnel 1
+  tunnel1_inside_cidr                  = "169.254.100.0/30"
+  tunnel1_dpd_timeout_action           = "restart"
+  tunnel1_dpd_timeout_seconds          = 120
+  tunnel1_ike_versions                 = ["ikev2"]
+  tunnel1_phase1_dh_group_numbers      = [15]
+  tunnel1_phase1_encryption_algorithms = ["AES256"]
+  tunnel1_phase1_integrity_algorithms  = ["SHA2-512"]
+  tunnel1_phase2_dh_group_numbers      = [15]
+  tunnel1_phase2_encryption_algorithms = ["AES256"]
+  tunnel1_phase2_integrity_algorithms  = ["SHA2-512"]
+  tunnel1_startup_action               = "start"
+  tunnel1_preshared_key                = var.tunnel1_preshared_key
+  tunnel1_rekey_margin_time_seconds    = 270
+
+  # Tunnel 2
+  tunnel2_inside_cidr                  = "169.254.200.0/30"
+  tunnel2_dpd_timeout_action           = "restart"
+  tunnel2_ike_versions                 = ["ikev2"]
+  tunnel2_phase1_dh_group_numbers      = [15]
+  tunnel2_phase1_encryption_algorithms = ["AES256"]
+  tunnel2_phase1_integrity_algorithms  = ["SHA2-512"]
+  tunnel2_phase2_dh_group_numbers      = [15]
+  tunnel2_phase2_encryption_algorithms = ["AES256"]
+  tunnel2_phase2_integrity_algorithms  = ["SHA2-512"]
+  tunnel2_startup_action               = "start"
+  tunnel2_preshared_key                = var.tunnel2_preshared_key
+  tunnel2_rekey_margin_time_seconds    = 270
+
+  tags = {
+    Name      = "VPN connection TGW to CGW"
+    ManagedBy = "Terraform"
+  }
+}
+
+# Associate the VPN TGW attachment with a TGW route table
+resource "aws_ec2_transit_gateway_route_table_association" "vpn" {
+  transit_gateway_attachment_id  = module.s2s_vpn.vpn_connection_transit_gateway_attachment_id
+  transit_gateway_route_table_id = module.transit_gateway.tgw_common_route_table_id
+}
+
+# Static route on the TGW route table: on-prem CIDR → VPN attachment
+resource "aws_ec2_transit_gateway_route" "onprem_via_vpn" {
+  destination_cidr_block         = "10.100.0.0/24"
+  transit_gateway_attachment_id  = module.s2s_vpn.vpn_connection_transit_gateway_attachment_id
+  transit_gateway_route_table_id = module.transit_gateway.tgw_inspection_route_table_id
+}
+```
+
+### VGW Mode
+
+```hcl
+# Customer Gateway — represents the remote (on-prem) VPN device
+resource "aws_customer_gateway" "main" {
+  bgp_asn    = 65000
+  ip_address = "203.0.113.1" # Public IP of the on-prem VPN device
+  type       = "ipsec.1"
+
+  tags = {
+    Name = "customer-gateway"
+  }
+}
+
+# S2S VPN module — attached directly to a VPC via Virtual Private Gateway
+module "s2s_vpn" {
+  source = "path/to/tf-module-aws-s2s-vpn"
+
+  customer_gateway_id = aws_customer_gateway.main.id
+  vpn_gateway_id      = aws_vpn_gateway.main.id
+  vpc_id              = module.vpc.vpc_id
+
+  connect_to_transit_gateway    = false
+  create_vpn_gateway_attachment = true
 
   vpn_connection_static_routes_only         = true
   vpn_connection_static_routes_destinations = ["192.168.0.0/16"]
 
-  vpc_subnet_route_table_ids   = ["rtb-aaa111", "rtb-bbb222"]
-  vpc_subnet_route_table_count = 2
+  vpc_subnet_route_table_ids   = module.vpc.private_route_table_ids
+  vpc_subnet_route_table_count = length(module.vpc.private_route_table_ids)
+
+  tunnel_inside_ip_version = "ipv4"
+
+  # Tunnel 1
+  tunnel1_inside_cidr                  = "169.254.100.0/30"
+  tunnel1_dpd_timeout_action           = "restart"
+  tunnel1_dpd_timeout_seconds          = 120
+  tunnel1_ike_versions                 = ["ikev2"]
+  tunnel1_phase1_dh_group_numbers      = [15]
+  tunnel1_phase1_encryption_algorithms = ["AES256"]
+  tunnel1_phase1_integrity_algorithms  = ["SHA2-512"]
+  tunnel1_phase2_dh_group_numbers      = [15]
+  tunnel1_phase2_encryption_algorithms = ["AES256"]
+  tunnel1_phase2_integrity_algorithms  = ["SHA2-512"]
+  tunnel1_startup_action               = "start"
+  tunnel1_preshared_key                = var.tunnel1_preshared_key
+  tunnel1_rekey_margin_time_seconds    = 270
+
+  # Tunnel 2
+  tunnel2_inside_cidr                  = "169.254.200.0/30"
+  tunnel2_dpd_timeout_action           = "restart"
+  tunnel2_ike_versions                 = ["ikev2"]
+  tunnel2_phase1_dh_group_numbers      = [15]
+  tunnel2_phase1_encryption_algorithms = ["AES256"]
+  tunnel2_phase1_integrity_algorithms  = ["SHA2-512"]
+  tunnel2_phase2_dh_group_numbers      = [15]
+  tunnel2_phase2_encryption_algorithms = ["AES256"]
+  tunnel2_phase2_integrity_algorithms  = ["SHA2-512"]
+  tunnel2_startup_action               = "start"
+  tunnel2_preshared_key                = var.tunnel2_preshared_key
+  tunnel2_rekey_margin_time_seconds    = 270
 
   tags = {
+    Name        = "VPN connection VGW to CGW"
     Environment = "production"
-    ManagedBy   = "terraform"
+    ManagedBy   = "Terraform"
   }
 }
 ```
