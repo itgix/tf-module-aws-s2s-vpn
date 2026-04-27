@@ -17,11 +17,11 @@ Part of the [ITGix AWS Landing Zone](https://itgix.com/itgix-landing-zone/).
 | Name | Version |
 |------|---------|
 | Terraform | >= 1.0 |
-| AWS provider | >= 4.66 |
+| AWS provider | >= 5.23 |
 
 ## Inputs
 
-> This module has **55 variables** covering detailed tunnel configuration. The key variables are listed below. See `variables.tf` for the complete list including all tunnel phase 1/2 encryption, integrity, DH group, and lifetime settings.
+> This module has **54 variables** covering detailed tunnel configuration. The key variables are listed below. See `variables.tf` for the complete list including all tunnel phase 1/2 encryption, integrity, DH group, and lifetime settings. Most tunnel variables include input validation.
 
 ### Connection
 
@@ -43,7 +43,7 @@ Part of the [ITGix AWS Landing Zone](https://itgix.com/itgix-landing-zone/).
 | `vpn_connection_static_routes_only` | Use static routes exclusively | `bool` | `false` | no |
 | `vpn_connection_static_routes_destinations` | List of destination CIDRs for static routes | `list(string)` | `[]` | no |
 | `vpc_subnet_route_table_ids` | VPC subnet route table IDs for route propagation | `list(string)` | `[]` | no |
-| `vpc_subnet_route_table_count` | Number of subnet route table IDs | `number` | `0` | no |
+| `vpc_subnet_route_table_count` | **Deprecated** — ignored, the module uses `length(vpc_subnet_route_table_ids)` automatically | `number` | `0` | no |
 
 ### Tunnel Configuration
 
@@ -53,23 +53,40 @@ Part of the [ITGix AWS Landing Zone](https://itgix.com/itgix-landing-zone/).
 | `tunnel2_inside_cidr` | Inside CIDR for tunnel 2 | `string` | `""` | no |
 | `tunnel1_preshared_key` | Preshared key for tunnel 1 | `string` | `""` | no |
 | `tunnel2_preshared_key` | Preshared key for tunnel 2 | `string` | `""` | no |
-| `tunnel_inside_ip_version` | IP version for tunnel inside (ipv4 or ipv6) | `string` | `null` | no |
-| `tunnel1_ike_versions` | IKE versions for tunnel 1 | `list(string)` | `null` | no |
-| `tunnel2_ike_versions` | IKE versions for tunnel 2 | `list(string)` | `null` | no |
-| `tunnel1_startup_action` | Startup action for tunnel 1 | `string` | `null` | no |
-| `tunnel2_startup_action` | Startup action for tunnel 2 | `string` | `null` | no |
+| `tunnel_inside_ip_version` | IP version for tunnel inside (`ipv4` or `ipv6`) | `string` | `null` | no |
+| `tunnel1_ike_versions` | IKE versions for tunnel 1 (`ikev1`, `ikev2`) | `list(string)` | `null` | no |
+| `tunnel2_ike_versions` | IKE versions for tunnel 2 (`ikev1`, `ikev2`) | `list(string)` | `null` | no |
+| `tunnel1_startup_action` | Startup action for tunnel 1 (`add`, `start`) | `string` | `null` | no |
+| `tunnel2_startup_action` | Startup action for tunnel 2 (`add`, `start`) | `string` | `null` | no |
 
 ## Outputs
 
 | Name | Description |
 |------|-------------|
-| `vpn_connection_id` | VPN Connection ID |
-| `vpn_connection_tunnel1_address` | Public IP of tunnel 1 |
-| `vpn_connection_tunnel1_cgw_inside_address` | CGW inside address of tunnel 1 |
-| `vpn_connection_tunnel1_vgw_inside_address` | VGW inside address of tunnel 1 |
-| `vpn_connection_tunnel2_address` | Public IP of tunnel 2 |
-| `vpn_connection_tunnel2_cgw_inside_address` | CGW inside address of tunnel 2 |
-| `vpn_connection_tunnel2_vgw_inside_address` | VGW inside address of tunnel 2 |
+| `vpn_connection_id` | The VPN Connection ID |
+| `vpn_connection_tunnel1_address` | Public IP address of tunnel 1 |
+| `vpn_connection_tunnel1_cgw_inside_address` | RFC 6890 link-local address of tunnel 1 (Customer Gateway side) |
+| `vpn_connection_tunnel1_vgw_inside_address` | RFC 6890 link-local address of tunnel 1 (VPN Gateway side) |
+| `vpn_connection_tunnel2_address` | Public IP address of tunnel 2 |
+| `vpn_connection_tunnel2_cgw_inside_address` | RFC 6890 link-local address of tunnel 2 (Customer Gateway side) |
+| `vpn_connection_tunnel2_vgw_inside_address` | RFC 6890 link-local address of tunnel 2 (VPN Gateway side) |
+| `vpn_connection_transit_gateway_attachment_id` | Transit Gateway attachment ID for the VPN connection |
+| `vpn_connection_customer_gateway_configuration` | Customer Gateway configuration (native XML format, sensitive) |
+| `tunnel1_preshared_key` | Preshared key of tunnel 1 (sensitive) |
+| `tunnel2_preshared_key` | Preshared key of tunnel 2 (sensitive) |
+
+## Module Structure
+
+| File | Contents |
+|------|----------|
+| `locals.tf` | Local values and computed helpers |
+| `vpn-connection.tf` | VPN connection resources (4 variants based on CIDR/PSK combination) |
+| `vpn-gateway.tf` | VPN Gateway attachment and route propagation |
+| `routes.tf` | Static VPN connection routes |
+| `tags.tf` | Transit Gateway attachment tagging |
+| `variables.tf` | All input variables with validation |
+| `outputs.tf` | All module outputs |
+| `versions.tf` | Terraform and provider version constraints |
 
 ## Attachment Modes
 
@@ -104,7 +121,6 @@ connect_to_transit_gateway    = false   # default
 create_vpn_gateway_attachment = true    # default
 vpn_gateway_id                = "<vgw-id>"
 vpc_subnet_route_table_ids    = ["rtb-xxx", ...]
-vpc_subnet_route_table_count  = <number>
 ```
 
 ## Usage Examples
@@ -218,8 +234,7 @@ module "s2s_vpn" {
   vpn_connection_static_routes_only         = true
   vpn_connection_static_routes_destinations = ["192.168.0.0/16"]
 
-  vpc_subnet_route_table_ids   = module.vpc.private_route_table_ids
-  vpc_subnet_route_table_count = length(module.vpc.private_route_table_ids)
+  vpc_subnet_route_table_ids = module.vpc.private_route_table_ids
 
   tunnel_inside_ip_version = "ipv4"
 
